@@ -1,0 +1,792 @@
+---
+title: "Reconnaissance d’image à partir d’une image hyperpsectrale"
+author: Hamza ZAIM - Radja KHELIF - ADLZARRABI Aynaz
+date: November 22, 2020
+
+output: html_notebook
+---
+#Présentation du problème
+Afin d’assurer au mieux la qualité des images satellites, les capteurs type ROSIS captent une même image selon plusieurs centaines de bandes passantes continues et allant du visible au proche infra rouge et à l’infrarouge en courtes bandes.
+
+Les images satellites ainsi obtenues sont constituées de pixels sur chacun desquels sont mesurées les différentes bandes passantes. Elles sont appelées images hyperspectrales.
+
+Une image hyperspectrale se présente en termes de données sous la forme d’un cube dont une face est formée de la position de chaque pixel dans l’image en dimensions 2 répliquée en fonction des valeurs spectrales.
+L’image qui fait l’objet de l’étude est une vue satellitaire hyperspectrale de l’Université de Pavie, ville de Lombardie, proche de Milan présentée ci-dessous ainsiqu’une image photographique aérienne :
+
+Cette image est constituée de 207400 pixels (image 610×340) sur lesquels sont effectuées 103 mesures spectrales : nous disposons donc d’un cube de données (610×340×103), soit 207400 individus, les pixels, et 103 inputs, les mesures spectrales.
+Dans l’étude menée, l’objectif est de parvenir à reconstituer l’image à partir de la connaissance des spectres. En effet, la photographie aérienne et la connaissance du site permettent de connaître la nature réelle des pixels de cette image et l’objectif est d’effectuer un apprentissage de cette image afin de pouvoir reconstituer d’autres images dans des secteurs pour lesquels la nature de pixels est inconnue.
+
+Ainsi que l'outup est définie comme se suit:
+ 0 --> mask (i.e. pixels non concernés par l'étude)
+ 1 --> asphalt (6631)
+ 2 --> meadows (18649)
+ 3 --> Gravel (2009)
+ 4 --> Trees (3064)
+ 5 --> painted metal sheets (1345)
+ 6 --> bare soil (5029)
+ 7 --> bitumen (1330)
+ 8 --> self-blocking bricks (3682)
+ 9 --> shadows (947)
+
+Dans l’image de droite, on peut constater que certaines zones sont noircies : elles correspondent à des secteurs non concernés par l’étude et correspondant à un masque codé « 0 » dans les données. Elles figurent donc dans les données initiales car indispensables à la construction de l’image : elles seront donc neutralisées pour effectuer l’apprentissage et réintroduites pour les visualiser. L’apprentissage mettra en oeuvre 42776 pixels.
+
+Alors on va mettre en oeuvre les méthodes d’apprentissage (Réseaux de Neurones, Support Vector Machine, Arbre de Décision, K plus proches voisins) pour reconstituer l’image et déterminer celle qui fournit le meilleur résultat.
+
+Ce rapport fait une présentation du problème, la présentation des résultats se fera à la fois sous forme textuelle et numérique et sous forme d’image.
+
+- Le premier, PaviaU_gt.mat, contient les informations sur la nature des pixels, i.e., les outputs ;
+- Le second, PaviaU.mat, contient les spectres (c’est-à-dire les longueurs d’ondes), i.e., les inputs.
+
+Dans un premier temps, nous avons commencé par lancer les méthodes d'apprentissage sur les données original avec des parrametre de notre choix.
+
+Ensuite, On a fait un analyse en composantes principales sur les longueurs d’onde (dont on fera une analyse sommaire et une représentation des pixels colorés selon la valeur de l’input) et de réaliser par la suite les apprentissages sur les composantes principales en justifiant ce choix.
+
+On mettra en oeuvre pour effectuer le choix optimal et pour chaque méthode d’apprentissage, la stratégie basée sur des réplications d’échantillons d’apprentissage (pour caler les paramètres de la méthode et le nombre de composantes de l’ACP) et d’échantillons tests pour valider les résultats.
+Pour chacune des méthodes, on fournira l’image reconstituée correspondant au meilleur résultat.
+
+#Etape 1: Transormation des données
+##Création des données de fonction des spectre infra-rouge à partir des données de pixel
+### TELECHARGER ET FORMATER LES DONNEES
+#### Chargement des données
+utilisation du package "R.matlab" pour lire une image au format du logiciel Matlab
+Télécharger le package "R.matlab" puis charger le dans votre session à l'aide de la commande:
+```{r}
+#install.package(R.matlab)
+library(R.matlab)
+```
+Après avoir importé le package, on passe alors o l'importation des données.
+##### Définition du chemin d'accès aux données
+```{r}
+setwd("C:/Users/zaim_h/Desktop/M2/BI-ERP/DataMining/Projet DataMining")
+```
+Puis on passe à la lecture du fichier  "PaviaU_gt.mat" donnant la nature des pixels (image 610 x 340 pixels), et qui va être le contenue de notre fonction de spectre (Output):
+```{r}
+pavia_gt = readMat("PaviaU_gt.mat")
+```
+La lecture de l'image hyperspectrale et qui va être le contenue de nos Input:
+```{r}
+pavia_hyp = readMat("PaviaU.mat")
+```
+Après avoir importé les données, il faut transformer les données en foction de spectre infrarouge, ce qui va nous faciliter l'utilisation des données pour les traiter:
+#### Formatage de l'image hyperspectrale
+Les commandes suivantes transforment le tableau tri-dimensionnel "pavia_hyp$paviaU"  en une matrice possédant 207400 lignes x 103 colonnes (207400 = 610 x 340)
+```{r}
+count = 0
+nbpixels = 610 * 340
+PAVIA_HYP = matrix(0, nrow = nbpixels, ncol = 103)
+for(jj in 1:340)
+  for(ii in 1:610){
+    count = count + 1
+    PAVIA_HYP[count, ] = pavia_hyp$paviaU[ii, jj, ]
+  }
+# désignation des prédicteurs
+nbwavelengths = ncol(PAVIA_HYP) # nombre de prédicteurs
+dimnames(PAVIA_HYP)[[2]] = paste0("V", 1:nbwavelengths)
+# "pixels_id" identifie chaque pixel par un numéro correspondant à sa localisation dans l'image
+pixels_id = 1:nbpixels
+# "Target" contient l'output
+Target = as.vector(pavia_gt$paviaU.gt)
+#Construction de la matrice de données par élimination du masque
+# matrice contenant les prédicteurs uniquement pour les pixels en dehors du masque (ceux pour lesquels la modalité de "Target" est "0")
+PAVIA_HYP_WITHOUT_MASK = PAVIA_HYP[Target != 0, ]
+# variable cible uniquement pour les pixels en dehors du masque
+Target_without_mask = Target[Target != 0]
+# identifiant uniquement pour les pixels en dehors du masque
+pixels_id_without_mask = pixels_id[Target != 0]
+# Définition de "Target_without_mask" comme facteur
+Target_without_mask = as.factor(Target_without_mask)
+DATA = data.frame(Target_without_mask, PAVIA_HYP_WITHOUT_MASK)
+```
+Finalement, notre jeu de donnée contenant à la fois la variable cible et les prédicteur est créé, et on peut maintenant commencer nos analyse et notre apprentissage machine.
+L'objet su jeu de données créé est mis au format "dataframe"
+On va analyser nos données en appliquant les commandes suivantes:
+```{r}
+summary(DATA)
+colnames(DATA)
+```
+
+#Etape 2: Lancement des modéles de calssification sur les données de fonction
+##Réseau de neurone
+### Réseau de neurone linéaire
+### Réseau de neurone multicouche Sans lien directe
+### Réseau de neurone multicouche Avec lien directe
+
+##SVM
+### SVM Polynomiale
+### SVM Raidal
+
+## Arbre de décision
+## KNN
+
+#Etape 3: ACP
+Comme on a constaté dans la partie précédente, l'apprentissage machine appliqué sur les données 'Original' des spectre prends énormément du temps, et aussi on remarque que l'estimation de l'image est très faibe.
+Alors, on a choisi d'appliquer une analyse factiorielle pour optimiser le nombre des dimensions (variables) pour avoir un gain au niveau du temps et aussi de la performance d'apprentissage et puis de prédiction ou d'estimation.
+Tous d'abbord, on commence par installer et importer les packages suivant:
+```{r}
+#install.package(FactoMineR)
+#install.package(factoextra)
+library(FactoMineR)
+library(factoextra)
+```
+Puis on lance notre ACP sur les données du spectre. On va précisé qu'on va garder les 25 premiers axes (dimesnions) qui explique bien nos données. Ces dimensions vons être utilisé après pour relancer les méthodes d'apprentissage et pour comparer les résultats.
+```{r}
+Paviacp=PCA(DATA,quali.sup=1,ncp = 25, graph = FALSE)#ncp le nombre des dimension gardé en résultat
+```
+Maintenant on a le résultat d'ACP qu'on va l'analyser.
+On va maintenant chercher le nombre des axes qui explique très bien les données en tenant compte le cumule d'intertie, puis on ajoute une ligne y=99% pour avoir une idée sur le nombre des axes.
+```{r}
+#Inertie
+plot(Paviacp$eig[,3])
+abline(a=99, b=0)
+```
+On peut remarquer que ~15 dimensions expliquent plus de 99% de l'information du spectre.
+Maintenant on passe à l'affichage des carte d'ACP, pour étudier et analyser le résultat.
+##Analyse des classes d'individus et des variables
+```{r}
+plot.PCA(Paviacp, axes=c(1, 2), choix="ind", habillage=1)
+fviz_pca_ind(Paviacp,
+             geom.ind = "point", # show points only (nbut not "text")
+             col.ind = DATA$Target_without_mask, # color by groups
+             addEllipses = TRUE, # Concentration ellipses
+             legend.title = "Nature Pixel"
+)
+```
+Affichage de la carte des variable et des individus pour avoir une idée sur les axes et les classes des individus:
+```{r}
+fviz_pca_biplot(Paviacp, 
+                col.ind = DATA$Target_without_mask, palette = "jco", 
+                addEllipses = TRUE, label = "var",
+                legend.title = "Target") 
+```
+Maintenant, qu'on a analysé le résultat, on peut commencer l'analyse sur le nombre des varible:
+## Analyse des axes d'ACP:
+### Choix selon inertie
+```{r}
+#choix d'axe pour l'analyse
+fviz_eig(Paviacp, addlabels = TRUE, ylim = c(0, 50))
+```
+### Affichage du corplot
+Ce graphe va nous donner une idée sur l'information présenté par les 103 variables expliqués par chaque axes d'ACP, ce qui va nous permettre d'avoir aussi une idée sur l'information des variables qui contribuent dans chaque axes: 
+```{r}
+corrplot(Paviacp$var$cos2, is.corr=FALSE)
+```
+On peut aussi utiliser le graphe de qualité de présentation cos2 ainsi que de la contribution:
+```{r}
+fviz_cos2(Paviacp, choice = "var", axes = 1:2)
+fviz_contrib(Paviacp, choice = "var", axes = 1:2)
+```
+
+Finalement on a décidé de prendre les 25 axes (dimensions) d'acp pour notre apprentissage machine.
+
+#Etape 4: Réduction des dimensions: Lancement des modèles de classification sur les données d'ACP
+## Recherche des paramettres optimals
+Dans cette étapes on va essayer de lancer les méthodes d'apprentissage sur les données ACP en variant le nombre des dimensions qui rentrent dans l'analyse, et les parramettre de chaque analyse, en fesant référence au Taux de mal classé de chaque itération de paramettre ou de dimension.
+Ces tests vont nous donner une idée sur les parramettre et le nombre optimal des dimension d'ACP qui donne les meilleurs résultat de prédiction. Ce qu'on va l'utiliser pour l'estimation de l'image. On va créer une fonction tune personalisé, où on va avoir plus de controle sur la complexité.
+
+On va définit un nombre de réplication de 2 par chaque itération et une palette du nombre de dmension à tester à chaque fois, aisni que la matrice d'erreur qui va résumer notre test pour chaque méthode:
+```{r}
+nr=2 #nb replication
+nd=c(3,5,10,15,18) #nb dimensio
+k1=0 #compteur des lignes
+```
+
+### Réseau de neurone
+on va créer des réseau de neurones avec et sans couche cachée et lien directe, de différent nombre des noeuds.
+Tout d'abord, on va installer et importer les packages qu'on va les utiliser pour faire le test et pour créer notre réseau de neuronnes.
+```{r}
+library(rpart)
+library(rpart.plot)
+library(nnet)
+```
+
+#### Réseau de neurone linéaire
+Cette analyse consiste à créer un réseau de neurones sans couche cachée mais avoir un lient directe entre les inputs (Dimensions ACP) et l'output qui est TARGET_WITHOUT_MASK.
+```{r}
+mse.lnnet=matrix(nrow = length(nd)*nr, ncol = 2)
+for(i in nd){#pour chaque ajout de dimension
+  #for (s in 1:length(nc)){ #pour chaque choix de noeud
+    
+    #creation des données d'apprentissage
+    data.acp = data.frame(Target_without_mask, Paviacp$ind$coord[,c(1:i)])
+    names(data.acp)[1] = "Target_without_mask"
+    
+    for(j in 1:nr){ #pour chaque réplication
+      #Echantillonage
+      sample= sample.int(n = nrow(data.acp), size = floor(.75*nrow(data.acp)), replace = F)
+      train= data.acp[sample, ] #75% de lignes
+      test= data.acp[-sample, ] #25% de lignes
+      
+      #Application de nnet linéaire 
+      res.lnnet = nnet(Target_without_mask~., data=train ,size=0, 
+                         skip=TRUE,rang=0.1,linout=TRUE,
+                         decay=5e-4,maxit=1000,MaxNWts=1500)
+      #prédiction
+      lnnetpred=predict(res.lnnet, test, type="class")
+      #Taux de mal classé
+      Tmc=(1-sum(test$Target_without_mask==lnnetpred)/nrow(test))
+      #construction de la matrice
+      k1=k1+1
+      mse.lnnet[k1,1]=i #nombre de dimension
+      mse.lnnet[k1,2]=Tmc #Taux de mal classé
+    }
+  }
+```
+
+##### Résultat
+```{r}
+error.lnnet=data.frame(mse.lnnet)
+names(error.lnnet)[1] = "dim"
+names(error.lnnet)[2] = "Tmc"
+#names(error.lnnet)[3] = "size"
+
+error.lnnet %>% group_by(dim) %>% summarise(Tmc = mean(Tmc))
+error.lnnet %>% group_by(size) %>% summarise(Tmc = mean(Tmc))
+
+subset(error.lnnet, Tmc == min(error.lnnet$Tmc)) #chercher le ligne qui donne le min de TMC
+```
+Depuis les résultat de recherche des parrametre optimal, on a décidé de prendre 24 dimensions d'ACP puis lancer notre système de réseau de neurone linéaire sans couche caché:
+#### Optimalité
+```{r}
+#creation des données d'apprentissage
+data.acp = data.frame(Target_without_mask, Paviacp$ind$coord[,c(1:24)])
+names(data.acp)[1] = "Target_without_mask"
+
+#Echantillonage
+sample= sample.int(n = nrow(data.acp), size = floor(.75*nrow(data.acp)), replace = F)
+train= data.acp[sample, ] #75% de lignes
+test= data.acp[-sample, ] #25% de lignes
+
+#Application de nnet linéaire 
+res.lnnetO = nnet(Target_without_mask~., data=train ,size=0,
+                 skip=TRUE,rang=0.1,linout=TRUE,
+                 decay=5e-4,maxit=2000,MaxNWts=3500)
+
+#prédiction
+pred.lnnetO=predict(res.lnnetO, data.acp, type="class")
+#Taux de mal classé
+Tmc.lnnetO=(1-sum(test$Target_without_mask==pred.lnnetO)/nrow(test))
+#matrice de confusion
+TC.lnnetO=table(test$Target_without_mask,pred.lnnetO)
+```
+
+#### Estimation Image
+Dans cette partie on va comparer l'image estimé à l'image réel du terrain:
+```{r}
+nbrows=610
+nbcols=340
+# reconstruction de l'image estimée pour une pdrédiction de l'output dénomée Estimations
+Estimations=pred.lnnetO
+Image_estimation = rep(0, nbpixels)
+Image_estimation[pixels_id_without_mask] = as.numeric(Estimations)
+IMAGE_ESTIMATION = matrix(Image_estimation, nrow = nbrows, ncol = nbcols)
+# représentation des 2 images (réalité terrain + image estimée par l'arbre de décision construit)
+par(mar = c(2,0.5,2,0), cex.main = 2)
+layout(matrix(c(1,1,1,2,3,3,3,4), nrow = 2, ncol = 4, byrow = TRUE))
+Colors = c("pink", "green3", grey(0.4), "green4", "darkorchid2", "brown", "darkorchid4", "white", grey(0.7))
+# image terrain
+image(pavia_gt$paviaU.gt, useRaster=TRUE, axes=FALSE, col = c("black", Colors), main = "Réalité terrain")
+# simule un graphique pour pouvoir représenter une légende
+plot(1:1, 2:2, type = "n", bty = "n", xaxt = "n", yaxt = "n")
+legend.names = c("mask", "asphalt", "meadows", "gravel", "trees", "metal sheets", "bare soil", "bitumen", "pavement", "shadows")
+legend("bottomleft", fill = c("black", Colors), legend = legend.names, pch = 3, bty = "n", cex = 2)
+# image estimée
+image(IMAGE_ESTIMATION, useRaster=TRUE, axes=FALSE, col = c("black", Colors), main = "Image estimée")
+#
+```
+
+### Réseau de neurone multicouche Sans lien directe
+```{r}
+mse.nnetcwl=matrix(nrow = length(nd)*nr*length(nc), ncol = 3)
+
+for(i in nd){#pour chaque ajout de dimension
+  for (s in nc){ #pour chaque choix de noeud
+    
+    #creation des données d'apprentissage
+    data.acp = data.frame(Target_without_mask, Paviacp$ind$coord[,c(1:i)])
+    names(data.acp)[1] = "Target_without_mask"
+    
+    for(j in 1:nr){ #pour chaque réplication
+      #Echantillonage
+      sample= sample.int(n = nrow(data.acp), size = floor(.75*nrow(data.acp)), replace = F)
+      train= data.acp[sample, ] #75% de lignes
+      test= data.acp[-sample, ] #25% de lignes
+      
+      #Application de nnet sans lien linéaire "nnet couche without link"
+      res.nnetcwtl = nnet(Target_without_mask~., data=train ,size=s, 
+                      skip=FALSE,rang=0.1,linout=TRUE,
+                      decay=5e-4,maxit=2500,MaxNWts=3000)
+      #prédiction
+      pred.nnet.cwtl=predict(res.nnetcwtl, test, type="class")
+      #Taux de mal classé
+      Tmc=(1-sum(test$Target_without_mask==pred.nnet.cwtl)/nrow(test))
+      #construction de la matrice
+      k1=k1+1
+      mse.nnetcwtl[k1,1]=i #DIM
+      mse.nnetcwtl[k1,2]=Tmc
+      mse.nnetcwtl[k1,3]=s #choix de noeud
+    }
+  }
+}
+```
+
+#### Résultat
+```{r}
+error.nnetcwtl=data.frame(mse.nnetcwtl)
+names(error.nnetcwtl)[1] = "dim"
+names(error.nnetcwtl)[2] = "Tmc"
+names(error.nnetcwtl)[3] = "size"
+
+error.nnetcwtl %>% group_by(dim) %>% summarise(Tmc = mean(Tmc))
+error.nnetcwtl %>% group_by(size) %>% summarise(Tmc = mean(Tmc))
+
+subset(error.nnetcwtl, Tmc == min(error.nnetcwtl$Tmc)) #chercher le ligne qui donne le min de TMC
+```
+
+### Optimalité
+```{r}
+#création des données d'apprentissage
+data.acp = data.frame(Target_without_mask, Paviacp$ind$coord[,c(1:20)])
+names(data.acp)[1] = "Target_without_mask"
+
+#Echantillonage
+sample= sample.int(n = nrow(data.acp), size = floor(.75*nrow(data.acp)), replace = F)
+train= data.acp[sample, ] #75% de lignes
+test= data.acp[-sample, ] #25% de lignes
+
+#Application de nnet sans lien linéaire "nnet couche without link"
+res.nnetcwtl = nnet(Target_without_mask~., data=train ,size=15, 
+                    skip=FALSE,rang=0.1,linout=TRUE,
+                    decay=5e-4,maxit=2000,MaxNWts=3500)
+
+#prédiction
+pred.nnet.cwtl=predict(res.nnetcwtl, test, type="class")
+
+#Taux de mal classé
+Tmc.nnet.cwtl=(1-sum(test$Target_without_mask==pred.nnet.cwtl)/nrow(test))
+
+#matrice de confusion
+TC.nnet.cwtl=table(test$Target_without_mask,pred.nnet.cwtl)
+```
+
+#### Estimation Image
+```{r}
+nbrows=610
+nbcols=340
+Estimations = pred.nnet.cwtl
+Image_estimation = rep(0, nbpixels)
+Image_estimation[pixels_id_without_mask] = Estimations
+IMAGE_ESTIMATION = matrix(Image_estimation, nrow = nbrows, ncol = nbcols)
+# représentation des 2 images (réalité terrain + image estimée par l'arbre de décision construit)
+par(mar = c(2,0.5,2,0), cex.main = 2)
+layout(matrix(c(1,1,1,2,3,3,3,4), nrow = 2, ncol = 4, byrow = TRUE))
+Colors = c("pink", "green3", grey(0.4), "green4", "darkorchid2", "brown", "darkorchid4", "white", grey(0.7))
+# image terrain
+image(pavia_gt$paviaU.gt, useRaster=TRUE, axes=FALSE, col = c("black", Colors), main = "Réalité terrain")
+# simule un graphique pour pouvoir représenter une légende
+plot(1:1, 2:2, type = "n", bty = "n", xaxt = "n", yaxt = "n")
+legend.names = c("mask", "asphalt", "meadows", "gravel", "trees", "metal sheets", "bare soil", "bitumen", "pavement", "shadows")
+legend("bottomleft", fill = c("black", Colors), legend = legend.names, pch = 3, bty = "n", cex = 2)
+# image estimée
+image(IMAGE_ESTIMATION, useRaster=TRUE, axes=FALSE, col = c("black", Colors), main = "Image estimée")
+#
+```
+
+
+### Réseau de neurone multicouche Avec lien directe
+```{r}
+#Réseau de neurone multicouche avec lien directe
+for(i in nd){#pour chaque ajout de dimension
+  for (s in nc){ #pour chaque choix de noeud
+    
+    #creation des données d'apprentissage
+    data.acp = data.frame(Target_without_mask, Paviacp$ind$coord[,c(1:i)])
+    names(data.acp)[1] = "Target_without_mask"
+    
+    for(j in 1:nr){ #pour chaque réplication
+      #Echantillonage
+      sample= sample.int(n = nrow(data.acp), size = floor(.75*nrow(data.acp)), replace = F)
+      train= data.acp[sample, ] #75% de lignes
+      test= data.acp[-sample, ] #25% de lignes
+      
+      #Application de nnet AVEC lien linéaire nnet COUCHE WITH LINK
+      res.nnetcwl = nnet(Target_without_mask~., data=train ,size=s, 
+                      skip=TRUE,rang=0.1,linout=TRUE,
+                      decay=5e-4,maxit=2000,MaxNWts=3500)
+      #prédiction
+      pred.nnetcwl=predict(res.nnetcwl, test, type="class")
+      #Taux de mal classé
+      Tmc=(1-sum(test$Target_without_mask==pred.nnetcwl)/nrow(test))
+      #construction de la matrice
+      k1=k1+1
+      mse.nnetcwl[k1,1]=i #DIM
+      mse.nnetcwl[k1,2]=Tmc #Taux de mal classé
+      mse.nnetcwl[k1,3]=s #choix de noeud
+    }
+  }
+}
+```
+
+#### Résultat
+```{r}
+error.nnetcwl=data.frame(mse.nnetcwl)
+names(error.nnetcwl)[1] = "dim"
+names(error.nnetcwl)[2] = "Tmc"
+names(error.nnetcwl)[3] = "size"
+
+error.nnetcwl %>% group_by(dim) %>% summarise(Tmc = mean(Tmc))
+error.nnetcwl %>% group_by(size) %>% summarise(Tmc = mean(Tmc))
+subset(error.nnetcwl, Tmc == min(error.nnetcwl$Tmc)) #chercher le ligne qui donne le min de TMC
+```
+
+#### Optimalité 
+```{r}
+#Réseau de neurone multicouche avec lien directe OPTIMAL
+
+#creation des données d'apprentissage
+data.acp = data.frame(Target_without_mask, Paviacp$ind$coord[,c(1:5)])
+names(data.acp)[1] = "Target_without_mask"
+
+#Echantillonage
+sample= sample.int(n = nrow(data.acp), size = floor(.75*nrow(data.acp)), replace = F)
+train= data.acp[sample, ] #75% de lignes
+test= data.acp[-sample, ] #25% de lignes
+
+#Application de nnet AVEC lien linéaire nnet COUCHE WITH LINK
+res.nnet.cwlO = nnet(Target_without_mask~., data=train ,size=17, 
+                   skip=FALSE,rang=0.1,linout=TRUE,
+                   decay=5e-4,maxit=2000,MaxNWts=3500)
+#prédiction
+pred.nnet.cwlO=predict(res.nnet.cwlO, test, type="class")
+#Taux de mal classé
+Tmc.nnet.cwlO=(1-sum(test$Target_without_mask==pred.nnet.cwlO)/nrow(test))
+#matrice de confusion
+TC.nnet.cwlO=table(test$Target_without_mask,pred.nnet.cwlO)
+```
+
+#### Estimation Image
+```{r}
+nbrows=610
+nbcols=340
+Estimations = pred.nnet.cwlO
+Image_estimation = rep(0, nbpixels)
+Image_estimation[pixels_id_without_mask] = Estimations
+IMAGE_ESTIMATION = matrix(Image_estimation, nrow = nbrows, ncol = nbcols)
+# représentation des 2 images (réalité terrain + image estimée par l'arbre de décision construit)
+par(mar = c(2,0.5,2,0), cex.main = 2)
+layout(matrix(c(1,1,1,2,3,3,3,4), nrow = 2, ncol = 4, byrow = TRUE))
+Colors = c("pink", "green3", grey(0.4), "green4", "darkorchid2", "brown", "darkorchid4", "white", grey(0.7))
+# image terrain
+image(pavia_gt$paviaU.gt, useRaster=TRUE, axes=FALSE, col = c("black", Colors), main = "Réalité terrain")
+# simule un graphique pour pouvoir représenter une légende
+plot(1:1, 2:2, type = "n", bty = "n", xaxt = "n", yaxt = "n")
+legend.names = c("mask", "asphalt", "meadows", "gravel", "trees", "metal sheets", "bare soil", "bitumen", "pavement", "shadows")
+legend("bottomleft", fill = c("black", Colors), legend = legend.names, pch = 3, bty = "n", cex = 2)
+# image estimée
+image(IMAGE_ESTIMATION, useRaster=TRUE, axes=FALSE, col = c("black", Colors), main = "Image estimée")
+#
+```
+
+##SVM
+```{r}
+#install.package(pls)
+#install.package(e1071)
+library(pls)
+library(e1071)
+```
+
+### SVM Polynomiale
+```{r}
+dg= c(1,2,3) #degree
+mse.svm.Poly=matrix(nrow = length(dg)*nr*length(nd), ncol = 3)
+
+for(i in nd){#pour chaque ajout de dimension
+  for (d in dg){ #pour chaque degrée
+    
+    #creation des données d'apprentissage
+    data.acp = data.frame(Target_without_mask, Paviacp$ind$coord[,c(1:i)])
+    names(data.acp)[1] = "Target_without_mask"
+    
+    for(j in 1:nr){ #pour chaque réplication
+      #Echantillonage
+      sample= sample.int(n = nrow(data.acp), size = floor(.75*nrow(data.acp)), replace = F)
+      train= data.acp[sample, ] #75% de lignes
+      test= data.acp[-sample, ] #25% de ligne
+      
+      #Application de svm
+      res.svm.Poly=svm(Target_without_mask~.,data=train, degree=dg,kernel="polynomial", epsilon=.3)
+      
+      #prédiction
+      pred.svm.Poly=predict(res.svm.Poly,test,type="class")
+      #Tasux de mal classé
+      Tmc=1-sum(test$Target_without_mask==pred.svm.Poly)/nrow(test)
+      
+      #construction de la matrice
+      k1=k1+1
+      mse.svm.Poly[k1,1]=i
+      mse.svm.Poly[k1,2]=d
+      mse.svm.Poly[k1,3]=Tmc*100
+    }
+  }
+}
+```
+
+#### Résultat
+```{r}
+error.svm.Poly=data.frame(mse.svm.Poly)
+names(error.svm.Poly)[1] = "dim"
+names(error.svm.Poly)[2] = "degree"
+names(error.svm.Poly)[3] = "Tmc"
+error.svm.Poly %>% group_by(dim) %>% summarise(Tmc = mean(Tmc))
+subset(error.svm.Poly, Tmc == min(error.svm.Poly$Tmc))
+```
+
+#### Optimalité
+```{r}
+
+#creation des données d'apprentissage
+data.acp = data.frame(Target_without_mask, Paviacp$ind$coord[,c(1:15)])
+names(data.acp)[1] = "Target_without_mask"
+
+#Echantillonage
+sample= sample.int(n = nrow(data.acp), size = floor(.75*nrow(data.acp)), replace = F)
+train= data.acp[sample, ] #75% de lignes
+test= data.acp[-sample, ] #25% de ligne
+
+#Application de svm
+res.svm.PolyO=svm(Target_without_mask~.,data=train, degree=20 ,kernel="polynomial", epsilon=.3)
+
+#prédiction
+pred.svm.PolyO=predict(res.svm.PolyO,test,type="class")
+
+#Taux de mal classé
+Tmc.svm.PolyO=1-sum(test$Target_without_mask==pred.svm.PolyO)/nrow(test)
+
+#matrice de confusion
+TCP.svm.PolyO=table(test$Target_without_mask,pred.svm.PolyO)
+
+```
+
+#### Estimation Image
+```{r}
+nbrows=610
+nbcols=340
+Estimations = pred.svm.PolyO
+Image_estimation = rep(0, nbpixels)
+Image_estimation[pixels_id_without_mask] = Estimations
+IMAGE_ESTIMATION = matrix(Image_estimation, nrow = nbrows, ncol = nbcols)
+# représentation des 2 images (réalité terrain + image estimée par l'arbre de décision construit)
+par(mar = c(2,0.5,2,0), cex.main = 2)
+layout(matrix(c(1,1,1,2,3,3,3,4), nrow = 2, ncol = 4, byrow = TRUE))
+Colors = c("pink", "green3", grey(0.4), "green4", "darkorchid2", "brown", "darkorchid4", "white", grey(0.7))
+# image terrain
+image(pavia_gt$paviaU.gt, useRaster=TRUE, axes=FALSE, col = c("black", Colors), main = "Réalité terrain")
+# simule un graphique pour pouvoir représenter une légende
+plot(1:1, 2:2, type = "n", bty = "n", xaxt = "n", yaxt = "n")
+legend.names = c("mask", "asphalt", "meadows", "gravel", "trees", "metal sheets", "bare soil", "bitumen", "pavement", "shadows")
+legend("bottomleft", fill = c("black", Colors), legend = legend.names, pch = 3, bty = "n", cex = 2)
+# image estimée
+image(IMAGE_ESTIMATION, useRaster=TRUE, axes=FALSE, col = c("black", Colors), main = "Image estimée")
+#
+```
+
+### SVM Raidal
+```{r}
+#SVM Radial
+gam= c(0.1,0.2,0.4,0.6) #gamma
+mse.svm.Radial=matrix(nrow = length(gam)*nr*length(nd), ncol = 3)
+
+for(i in nd){#pour chaque ajout de dimension
+  for (g in gam){ #pour chaque gamma
+    
+    #creation des données d'apprentissage
+    data.acp = data.frame(Target_without_mask, Paviacp$ind$coord[,c(1:i)])
+    names(data.acp)[1] = "Target_without_mask"
+    
+    for(j in 1:nr){ #pour chaque rÃ©plication
+      #Echantillonage
+      sample= sample.int(n = nrow(data.acp), size = floor(.75*nrow(data.acp)), replace = F)
+      train= data.acp[sample, ] #75% de lignes
+      test= data.acp[-sample, ] #25% de ligne
+      
+      #Application de svm
+      res.svm.Radial=svm(Target_without_mask~.,data=train, gamma=g,kernel="radial", epsilon=.3)
+      
+      #prédiction
+      pred.svmR=predict(res.svm.Radial,test,type="class")
+      #Taux de mal classé
+      Tmc=1-sum(test$Target_without_mask==pred.svmR)/nrow(test)
+      
+      #construction de la matrice
+      k1=k1+1
+      mse.svm.Radial[k1,1]=i
+      mse.svm.Radial[k1,2]=g
+      mse.svm.Radial[k1,3]=Tmc*100
+    }
+  }
+}
+```
+
+#### Résultat
+```{r}
+error.svmRadial=data.frame(mse.svmRadial)
+names(error.svmRadial)[1] = "dim"
+names(error.svmRadial)[2] = "Gamma"
+names(error.svmRadial)[3] = "Tmc"
+error.svmRadial %>% group_by(dim) %>% summarise(Tmc = mean(Tmc))
+subset(error.svmRadial, Tmc == min(error.svmRadial$Tmc))
+```
+#### Optimalité
+```{r}
+#creation des données d'apprentissage
+data.acp = data.frame(Target_without_mask, Paviacp$ind$coord[,c(1:20)])
+names(data.acp)[1] = "Target_without_mask"
+
+#Echantillonage
+sample= sample.int(n = nrow(data.acp), size = floor(.75*nrow(data.acp)), replace = F)
+train= data.acp[sample, ] #75% de lignes
+test= data.acp[-sample, ] #25% de ligne
+
+#Application de svm
+res.svm.Radial.O=svm(Target_without_mask~.,data=train, gamma=0.1 ,kernel="radial", epsilon=.3)
+
+#prédiction
+pred.svm.Radial.O=predict(res.svm.Radial.O,test,type="class")
+
+#Taux de mal classé
+Tmc.svm.Radial.O=1-sum(test$Target_without_mask==pred.svm.Radial.O)/nrow(test)
+
+#matrice de confusion
+TCP.svm.PolyR=table(test$Target_without_mask,pred.svm.Radial.O)
+```
+
+#### Estimation Image
+```{r}
+nbrows=610
+nbcols=340
+Estimations = Tmc.svm.Radial.O
+Image_estimation = rep(0, nbpixels)
+Image_estimation[pixels_id_without_mask] = Estimations
+IMAGE_ESTIMATION = matrix(Image_estimation, nrow = nbrows, ncol = nbcols)
+# représentation des 2 images (réalité terrain + image estimée par l'arbre de décision construit)
+par(mar = c(2,0.5,2,0), cex.main = 2)
+layout(matrix(c(1,1,1,2,3,3,3,4), nrow = 2, ncol = 4, byrow = TRUE))
+Colors = c("pink", "green3", grey(0.4), "green4", "darkorchid2", "brown", "darkorchid4", "white", grey(0.7))
+# image terrain
+image(pavia_gt$paviaU.gt, useRaster=TRUE, axes=FALSE, col = c("black", Colors), main = "Réalité terrain")
+# simule un graphique pour pouvoir représenter une légende
+plot(1:1, 2:2, type = "n", bty = "n", xaxt = "n", yaxt = "n")
+legend.names = c("mask", "asphalt", "meadows", "gravel", "trees", "metal sheets", "bare soil", "bitumen", "pavement", "shadows")
+legend("bottomleft", fill = c("black", Colors), legend = legend.names, pch = 3, bty = "n", cex = 2)
+# image estimée
+image(IMAGE_ESTIMATION, useRaster=TRUE, axes=FALSE, col = c("black", Colors), main = "Image estimée")
+#
+```
+
+## Arbre de décision
+```{r}
+library(rpart)
+library(rpart.plot)
+nd=c(3,5,10,15,16,20) #nb dimension
+```
+
+```{r}
+#Arbre de décision
+
+nsplit=c(5,10,15,20) #nombre des split à tester
+mse.dt=matrix(nrow = length(nd)*nr*length(nsplit), ncol = 3)
+
+for(i in nd){#pour chaque ajout de dimension
+  for (ns in nsplit){ #pour chaque choix de split
+    
+    #creation des données d'apprentissage
+    data.acp = data.frame(Target_without_mask, Paviacp$ind$coord[,c(1:i)])
+    names(data.acp)[1] = "Target_without_mask"
+    
+    for(j in 1:nr){ #pour chaque réplication
+      #Echantillonage
+      sample= sample.int(n = nrow(data.acp), size = floor(.75*nrow(data.acp)), replace = F)
+      train= data.acp[sample, ] #75% de lignes
+      test= data.acp[-sample, ] #25% de lignes
+      
+      #Application d'arbre de décision
+      res.dt=rpart(Target_without_mask~.,data=train,control=rpart.control(minsplit=ns,cp=.05))
+      
+      #prédiction
+      pred.dt=predict(res.dt, test, type="class")
+      
+      #Taux de mal classé
+      Tmc=(1-sum(test$Target_without_mask==pred.dt)/nrow(test))
+      #construction de la matrice
+      k1=k1+1
+      mse.dt[k1,1]=i #DIM
+      mse.dt[k1,2]=Tmc
+      mse.dt[k1,3]=ns #choix de split
+    }
+  }
+}
+```
+
+#### Résultat
+```{r}
+error.dt=data.frame(mse.dt)
+names(error.dt)[1] = "dim"
+names(error.dt)[2] = "Tmc"
+names(error.dt)[3] = "split"
+
+error.dt %>% group_by(dim) %>% summarise(Tmc = mean(Tmc))
+error.dt %>% group_by(size) %>% summarise(Tmc = mean(Tmc))
+
+subset(error.dt, Tmc == min(error.dt$Tmc)) #chercher le ligne qui donne le min de TMC
+```
+
+#### Optimalité
+```{r}
+#Arbre de décision
+library(rpart)
+library(rpart.plot)
+    
+#creation des données d'apprentissage
+data.acp = data.frame(Target_without_mask, Paviacp$ind$coord[,c(1:5)])
+names(data.acp)[1] = "Target_without_mask"
+
+#Echantillonage
+sample= sample.int(n = nrow(data.acp), size = floor(.75*nrow(data.acp)), replace = F)
+train= data.acp[sample, ] #75% de lignes
+test= data.acp[-sample, ] #25% de lignes
+
+#Application d'arbre de décision
+res.dt=rpart(Target_without_mask~.,data=train,control=rpart.control(minsplit=10,cp=.05))
+
+#prédiction
+pred.dtO=predict(res.dt, test, type="class")
+
+#Taux de mal classé
+Tmc.dtO=(1-sum(test$Target_without_mask==pred.dtO)/nrow(test))
+
+#matrice de confusion
+TC.dtO=table(test$Target_without_mask,pred.dtO)
+```
+
+#### Estimation Image
+```{r}
+nbrows=610
+nbcols=340
+Estimations = pred.dtO
+Image_estimation = rep(0, nbpixels)
+Image_estimation[pixels_id_without_mask] = Estimations
+IMAGE_ESTIMATION = matrix(Image_estimation, nrow = nbrows, ncol = nbcols)
+# représentation des 2 images (réalité terrain + image estimée par l'arbre de décision construit)
+par(mar = c(2,0.5,2,0), cex.main = 2)
+layout(matrix(c(1,1,1,2,3,3,3,4), nrow = 2, ncol = 4, byrow = TRUE))
+Colors = c("pink", "green3", grey(0.4), "green4", "darkorchid2", "brown", "darkorchid4", "white", grey(0.7))
+# image terrain
+image(pavia_gt$paviaU.gt, useRaster=TRUE, axes=FALSE, col = c("black", Colors), main = "Réalité terrain")
+# simule un graphique pour pouvoir représenter une légende
+plot(1:1, 2:2, type = "n", bty = "n", xaxt = "n", yaxt = "n")
+legend.names = c("mask", "asphalt", "meadows", "gravel", "trees", "metal sheets", "bare soil", "bitumen", "pavement", "shadows")
+legend("bottomleft", fill = c("black", Colors), legend = legend.names, pch = 3, bty = "n", cex = 2)
+# image estimée
+image(IMAGE_ESTIMATION, useRaster=TRUE, axes=FALSE, col = c("black", Colors), main = "Image estimée")
+```
+
+
